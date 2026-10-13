@@ -1,0 +1,28 @@
+kind = "data-app"
+previewPath = "/"
+title = "Stock Analysis Dashboard"
+description = "An interactive stock research dashboard for exploring Yahoo Finance daily history, moving averages, and RSI. Search a ticker, adjust the historical window, and inspect the latest available daily close and indicator values."
+version = "1.0.0"
+id = "artifacts/stock-analysis"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18824
+
+[services.development]
+run = "pnpm --filter @workspace/stock-analysis run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/stock-analysis", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/stock-analysis/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18824"
+BASE_PATH = "/"

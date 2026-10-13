@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: stocks
+    description: Historical stock market analysis
 paths:
   /healthz:
     get:
@@ -24,6 +26,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /stocks:
+    get:
+      operationId: getStockHistory
+      tags: [stocks]
+      summary: Get daily stock history and technical indicators
+      description: Returns Yahoo Finance daily history with close-based SMA 50, SMA 200, and Wilder RSI 14.
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9.^=_-]{1,20}$"
+        - name: period
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [1y, 3y, 5y]
+            default: 3y
+      responses:
+        "200":
+          description: Historical prices and derived analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockHistory"
+        "400":
+          description: Invalid ticker or period
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: No market history found for the ticker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "502":
+          description: Market data provider unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +80,73 @@ components:
           type: string
       required:
         - status
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+    StockHistory:
+      type: object
+      properties:
+        symbol:
+          type: string
+        currency:
+          type: ["string", "null"]
+        exchangeName:
+          type: ["string", "null"]
+        period:
+          type: string
+          enum: [1y, 3y, 5y]
+        updatedAt:
+          type: string
+          format: date-time
+        latest:
+          $ref: "#/components/schemas/StockSummary"
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/StockHistoryRow"
+      required: [symbol, currency, exchangeName, period, updatedAt, latest, rows]
+    StockSummary:
+      type: object
+      properties:
+        date:
+          type: string
+        close:
+          type: number
+        previousClose:
+          type: number
+        changePercent:
+          type: number
+        sma50:
+          type: ["number", "null"]
+        sma200:
+          type: ["number", "null"]
+        rsi14:
+          type: ["number", "null"]
+      required: [date, close, previousClose, changePercent, sma50, sma200, rsi14]
+    StockHistoryRow:
+      type: object
+      properties:
+        date:
+          type: string
+        open:
+          type: ["number", "null"]
+        high:
+          type: ["number", "null"]
+        low:
+          type: ["number", "null"]
+        close:
+          type: number
+        volume:
+          type: ["number", "null"]
+        sma50:
+          type: ["number", "null"]
+        sma200:
+          type: ["number", "null"]
+        rsi14:
+          type: ["number", "null"]
+      required: [date, open, high, low, close, volume, sma50, sma200, rsi14]
 
