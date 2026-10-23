@@ -22,18 +22,18 @@ export const HealthCheckResponse = zod.object({
  * @summary Get daily stock history and technical indicators
  */
 export const getStockHistoryQuerySymbolRegExp = new RegExp('^[A-Za-z0-9.^=_-]{1,20}$');
-export const getStockHistoryQueryPeriodDefault = `3y`;
+export const getStockHistoryQueryPeriodDefault = `5y`;
 
 export const GetStockHistoryQueryParams = zod.object({
   "symbol": zod.coerce.string().regex(getStockHistoryQuerySymbolRegExp),
-  "period": zod.enum(['1y', '3y', '5y']).default(getStockHistoryQueryPeriodDefault)
+  "period": zod.enum(['1y', '3y', '5y', '7y']).default(getStockHistoryQueryPeriodDefault)
 })
 
 export const GetStockHistoryResponse = zod.object({
   "symbol": zod.string(),
   "currency": zod.string().nullable(),
   "exchangeName": zod.string().nullable(),
-  "period": zod.enum(['1y', '3y', '5y']),
+  "period": zod.enum(['1y', '3y', '5y', '7y']),
   "updatedAt": zod.coerce.date(),
   "latest": zod.object({
   "date": zod.string(),

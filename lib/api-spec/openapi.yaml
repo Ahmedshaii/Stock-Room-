@@ -44,8 +44,8 @@ paths:
           required: false
           schema:
             type: string
-            enum: [1y, 3y, 5y]
-            default: 3y
+            enum: [1y, 3y, 5y, 7y]
+            default: 5y
       responses:
         "200":
           description: Historical prices and derived analysis
@@ -98,7 +98,7 @@ components:
           type: ["string", "null"]
         period:
           type: string
-          enum: [1y, 3y, 5y]
+          enum: [1y, 3y, 5y, 7y]
         updatedAt:
           type: string
           format: date-time

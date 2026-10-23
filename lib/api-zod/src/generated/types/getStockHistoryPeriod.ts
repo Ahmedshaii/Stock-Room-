@@ -13,4 +13,5 @@ export const GetStockHistoryPeriod = {
   '1y': '1y',
   '3y': '3y',
   '5y': '5y',
+  '7y': '7y',
 } as const;

@@ -1,6 +1,6 @@
 import { GetStockHistoryResponse } from "@workspace/api-zod";
 
-export type StockPeriod = "1y" | "3y" | "5y";
+export type StockPeriod = "1y" | "3y" | "5y" | "7y";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -69,9 +69,15 @@ function toFiniteOrNull(value: unknown): number | null {
 
 export function startForPeriod(period: StockPeriod, now = new Date()): Date {
   const start = new Date(now);
+  const targetYear = start.getUTCFullYear() - Number.parseInt(period, 10);
+  const month = start.getUTCMonth();
+  const day = start.getUTCDate();
   start.setUTCDate(1);
-  start.setUTCHours(0, 0, 0, 0);
-  start.setUTCFullYear(start.getUTCFullYear() - Number.parseInt(period, 10));
+  start.setUTCFullYear(targetYear);
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(targetYear, month + 1, 0),
+  ).getUTCDate();
+  start.setUTCDate(Math.min(day, lastDayOfTargetMonth));
   return start;
 }
 
@@ -154,6 +160,23 @@ function formatSessionDate(timestamp: unknown, formatter: Intl.DateTimeFormat): 
   return `${year}-${month}-${day}`;
 }
 
+function getSessionDateFormatter(meta: JsonRecord | undefined): Intl.DateTimeFormat {
+  const timezone = getExchangeTimezone(meta);
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  } catch {
+    throw new StockDataError(
+      "Yahoo Finance returned an invalid exchange timezone.",
+      502,
+    );
+  }
+}
+
 function toHistoryRows(result: YahooChartResult): PriceBar[] {
   const timestamps = result.timestamp;
   const indicators = result.indicators;
@@ -167,21 +190,7 @@ function toHistoryRows(result: YahooChartResult): PriceBar[] {
     );
   }
 
-  const timezone = getExchangeTimezone(result.meta);
-  let formatter: Intl.DateTimeFormat;
-  try {
-    formatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-  } catch {
-    throw new StockDataError(
-      "Yahoo Finance returned an invalid exchange timezone.",
-      502,
-    );
-  }
+  const formatter = getSessionDateFormatter(result.meta);
 
   const getValueAt = (key: string, index: number): unknown => {
     const values = isRecord(quote) ? quote[key] : null;
@@ -213,14 +222,29 @@ export function buildHistoryPayload(
   const bars = toHistoryRows(result);
   if (bars.length === 0) return null;
 
+  const sessionDateFormatter = getSessionDateFormatter(result.meta);
+  const periodStart = startForPeriod(period, updatedAt);
+  const periodStartDate = formatSessionDate(
+    Math.floor(periodStart.getTime() / 1_000),
+    sessionDateFormatter,
+  );
+  if (!periodStartDate) {
+    throw new StockDataError(
+      "Yahoo Finance returned an invalid historical date.",
+      502,
+    );
+  }
+
   const closes = bars.map((bar) => bar.close);
   const rsiValues = calculateWilderRsi(closes, RSI_WINDOW);
-  const rows = bars.map((bar, index) => ({
+  const allRows = bars.map((bar, index) => ({
     ...bar,
     sma50: rollingMean(closes, index, SMA_SHORT_WINDOW),
     sma200: rollingMean(closes, index, SMA_LONG_WINDOW),
     rsi14: rsiValues[index] ?? null,
   }));
+  const rows = allRows.filter((bar) => bar.date >= periodStartDate);
+  if (rows.length === 0) return null;
 
   const latest = rows[rows.length - 1]!;
   const previous = rows[rows.length - 2] ?? latest;
@@ -255,6 +279,12 @@ export function buildHistoryPayload(
   }
   return response.data;
 }
+
+type StockHistoryResponse = NonNullable<
+  ReturnType<typeof buildHistoryPayload>
+>;
+
+const inFlightHistories = new Map<string, Promise<StockHistoryResponse>>();
 
 function classifyProviderError(error: JsonRecord): StockDataError {
   const code = (toStringOrNull(error.code) ?? "").toLowerCase();
@@ -412,7 +442,28 @@ export async function getStockHistory(
   symbol: string,
   period: StockPeriod,
   dependencies: StockHistoryDependencies = {},
-) {
+): Promise<StockHistoryResponse> {
+  const requestKey =
+    dependencies.cache?.key ?? `${symbol.toUpperCase()}:${period}`;
+  const existing = inFlightHistories.get(requestKey);
+  if (existing) return existing;
+
+  const request = loadStockHistory(symbol, period, dependencies);
+  inFlightHistories.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightHistories.get(requestKey) === request) {
+      inFlightHistories.delete(requestKey);
+    }
+  }
+}
+
+async function loadStockHistory(
+  symbol: string,
+  period: StockPeriod,
+  dependencies: StockHistoryDependencies,
+): Promise<StockHistoryResponse> {
   const now = dependencies.now?.() ?? new Date();
   const cache = dependencies.cache;
   if (cache) {
@@ -431,7 +482,12 @@ export async function getStockHistory(
   const url = new URL(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`,
   );
-  url.searchParams.set("period1", String(Math.floor(startForPeriod(period, now).getTime() / 1_000)));
+  const periodStart = startForPeriod(period, now);
+  const indicatorLookbackStart = startForPeriod("1y", periodStart);
+  url.searchParams.set(
+    "period1",
+    String(Math.floor(indicatorLookbackStart.getTime() / 1_000)),
+  );
   url.searchParams.set("period2", String(Math.floor(now.getTime() / 1_000) + 86_400));
   url.searchParams.set("interval", "1d");
   url.searchParams.set("events", "history");

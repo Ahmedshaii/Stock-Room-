@@ -19,7 +19,7 @@ router.get("/stocks", async (req, res): Promise<void> => {
   }
 
   const symbol = parsed.data.symbol.toUpperCase();
-  const period = parsed.data.period ?? "3y";
+  const period = parsed.data.period ?? "5y";
   const endDate = new Date();
   const cacheKey = buildCacheKey("stock-history-v3", {
     symbol,

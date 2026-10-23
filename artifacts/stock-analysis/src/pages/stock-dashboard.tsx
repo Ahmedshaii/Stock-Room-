@@ -13,7 +13,10 @@ import {
 } from "lucide-react";
 
 const PERIODS: { value: GetStockHistoryPeriod; label: string }[] = [
-  { value: "1y", label: "1 year" }, { value: "3y", label: "3 years" }, { value: "5y", label: "5 years" },
+  { value: "1y", label: "1 year" },
+  { value: "3y", label: "3 years" },
+  { value: "5y", label: "5 years" },
+  { value: "7y", label: "7 years" },
 ];
 const INTERVALS = [
   { label: "5 minutes", value: 5 * 60 * 1000 },
@@ -88,7 +91,7 @@ function Metric({ label, value, detail, accent, testId }: { label: string; value
 function StockDashboard() {
   const [symbolInput, setSymbolInput] = useState("AAPL");
   const [symbol, setSymbol] = useState("AAPL");
-  const [period, setPeriod] = useState<GetStockHistoryPeriod>("3y");
+  const [period, setPeriod] = useState<GetStockHistoryPeriod>("5y");
   const [validation, setValidation] = useState("");
   const [isDark, setIsDark] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
