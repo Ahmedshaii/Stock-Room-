@@ -1,4 +1,7 @@
-import { GetStockHistoryResponse } from "@workspace/api-zod";
+import {
+  GetStockHistoryResponse,
+  GetStockSearchResponse,
+} from "@workspace/api-zod";
 
 export type StockPeriod = "1y" | "3y" | "5y" | "7y";
 
@@ -41,6 +44,13 @@ const RETRY_MAX_DELAY_MS = 1_000;
 const PROVIDER_TIMEOUT_MS = 10_000;
 const TEMPORARY_PROVIDER_ERROR =
   "Market data is temporarily unavailable. Try again shortly.";
+const TEMPORARY_SEARCH_ERROR =
+  "Stock search is temporarily unavailable. Try again shortly.";
+const STOCK_SYMBOL_PATTERN = /^[A-Za-z0-9.^=_-]{1,20}$/;
+
+type StockSearchDependencies = {
+  fetcher?: (input: URL, init: RequestInit) => Promise<Response>;
+};
 
 export class StockDataError extends Error {
   constructor(
@@ -52,6 +62,105 @@ export class StockDataError extends Error {
     super(message);
     this.name = "StockDataError";
   }
+}
+
+export async function searchStockSymbols(
+  query: string,
+  dependencies: StockSearchDependencies = {},
+) {
+  const normalizedQuery = query.trim();
+  if (normalizedQuery.length === 0 || normalizedQuery.length > 80) {
+    throw new StockDataError(
+      "Enter a company name or ticker to search.",
+      400,
+    );
+  }
+
+  const url = new URL("https://query1.finance.yahoo.com/v1/finance/search");
+  url.searchParams.set("q", normalizedQuery);
+  url.searchParams.set("quotesCount", "10");
+  url.searchParams.set("newsCount", "0");
+  url.searchParams.set("enableFuzzyQuery", "true");
+
+  let response: Response;
+  try {
+    response = await (dependencies.fetcher ?? fetch)(url, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Mozilla/5.0 (compatible; Stockroom/1.0)",
+      },
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+    });
+  } catch {
+    throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
+  }
+
+  if (!response.ok) {
+    throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new StockDataError(
+      "The stock search provider returned an unreadable response.",
+      502,
+    );
+  }
+
+  if (!isRecord(payload) || !Array.isArray(payload.quotes)) {
+    throw new StockDataError(
+      "The stock search provider returned malformed results.",
+      502,
+    );
+  }
+
+  const seenSymbols = new Set<string>();
+  const results = payload.quotes.flatMap((quote) => {
+    if (!isRecord(quote) || toStringOrNull(quote.quoteType)?.toUpperCase() !== "EQUITY") {
+      return [];
+    }
+
+    const symbol = toStringOrNull(quote.symbol);
+    const name =
+      toStringOrNull(quote.longname) ??
+      toStringOrNull(quote.shortname) ??
+      symbol;
+    if (
+      !symbol ||
+      !STOCK_SYMBOL_PATTERN.test(symbol) ||
+      !name ||
+      seenSymbols.has(symbol.toUpperCase())
+    ) {
+      return [];
+    }
+
+    seenSymbols.add(symbol.toUpperCase());
+    return [{
+      symbol,
+      name,
+      exchange: toStringOrNull(quote.exchDisp) ?? toStringOrNull(quote.exchange),
+    }];
+  });
+
+  const exactTickerIndex = results.findIndex(
+    (result) => result.symbol.toUpperCase() === normalizedQuery.toUpperCase(),
+  );
+  if (exactTickerIndex > 0) {
+    results.unshift(results.splice(exactTickerIndex, 1)[0]!);
+  }
+
+  const parsed = GetStockSearchResponse.safeParse({
+    results: results.slice(0, 8),
+  });
+  if (!parsed.success) {
+    throw new StockDataError(
+      "The stock search provider returned malformed results.",
+      502,
+    );
+  }
+  return parsed.data;
 }
 
 function isRecord(value: unknown): value is JsonRecord {

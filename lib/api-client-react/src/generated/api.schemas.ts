@@ -5,6 +5,18 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface StockSearchResult {
+  /** @pattern ^[A-Za-z0-9.^=_-]{1,20}$ */
+  symbol: string;
+  name: string;
+  /** @nullable */
+  exchange: string | null;
+}
+
+export interface StockSearchResponse {
+  results: StockSearchResult[];
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -66,6 +78,14 @@ export interface StockHistory {
   latest: StockSummary;
   rows: StockHistoryRow[];
 }
+
+export type GetStockSearchParams = {
+/**
+ * @minLength 1
+ * @maxLength 80
+ */
+query: string;
+};
 
 export type GetStockHistoryParams = {
 /**

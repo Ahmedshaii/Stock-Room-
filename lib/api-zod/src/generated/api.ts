@@ -9,6 +9,30 @@ import * as zod from 'zod';
 
 
 /**
+ * Returns matching listed equities from Yahoo Finance.
+ * @summary Search listed stocks by company name or ticker
+ */
+export const getStockSearchQueryQueryMax = 80;
+
+
+
+export const GetStockSearchQueryParams = zod.object({
+  "query": zod.coerce.string().min(1).max(getStockSearchQueryQueryMax)
+})
+
+export const getStockSearchResponseResultsItemSymbolRegExp = new RegExp('^[A-Za-z0-9.^=_-]{1,20}$');
+
+
+export const GetStockSearchResponse = zod.object({
+  "results": zod.array(zod.object({
+  "symbol": zod.string().regex(getStockSearchResponseResultsItemSymbolRegExp),
+  "name": zod.string(),
+  "exchange": zod.string().nullable()
+}))
+})
+
+
+/**
  * Returns server health status
  * @summary Health check
  */

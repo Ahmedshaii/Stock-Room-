@@ -18,8 +18,10 @@ import type {
 import type {
   ApiError,
   GetStockHistoryParams,
+  GetStockSearchParams,
   HealthStatus,
-  StockHistory
+  StockHistory,
+  StockSearchResponse
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -48,6 +50,91 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getGetStockSearchUrl = (params: GetStockSearchParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/stocks/search?${stringifiedParams}` : `/api/stocks/search`
+}
+
+/**
+ * Returns matching listed equities from Yahoo Finance.
+ * @summary Search listed stocks by company name or ticker
+ */
+export const getStockSearch = async (params: GetStockSearchParams, options?: Parameters<typeof customFetch>[1]): Promise<StockSearchResponse> => {
+
+  return customFetch<StockSearchResponse>(getGetStockSearchUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetStockSearchQueryKey = (params?: GetStockSearchParams,) => {
+    return [
+    `/api/stocks/search`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetStockSearchQueryOptions = <TData = Awaited<ReturnType<typeof getStockSearch>>, TError = ErrorType<ApiError>>(params: GetStockSearchParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStockSearch>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetStockSearchQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getStockSearch>>> = ({ signal }) => getStockSearch(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getStockSearch>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetStockSearchQueryResult = NonNullable<Awaited<ReturnType<typeof getStockSearch>>>
+export type GetStockSearchQueryError = ErrorType<ApiError>
+
+
+/**
+ * @summary Search listed stocks by company name or ticker
+ */
+
+export function useGetStockSearch<TData = Awaited<ReturnType<typeof getStockSearch>>, TError = ErrorType<ApiError>>(
+ params: GetStockSearchParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getStockSearch>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetStockSearchQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getHealthCheckUrl = () => {
 

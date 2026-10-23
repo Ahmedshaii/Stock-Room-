@@ -1,7 +1,12 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { getGetStockHistoryQueryKey, useGetStockHistory } from "@workspace/api-client-react";
-import type { GetStockHistoryPeriod } from "@workspace/api-client-react";
+import {
+  getGetStockHistoryQueryKey,
+  getGetStockSearchQueryKey,
+  useGetStockHistory,
+  useGetStockSearch,
+} from "@workspace/api-client-react";
+import type { GetStockHistoryPeriod, StockSearchResult } from "@workspace/api-client-react";
 import { CSVLink } from "react-csv";
 import {
   Area, AreaChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine,
@@ -93,12 +98,16 @@ function StockDashboard() {
   const [symbol, setSymbol] = useState("AAPL");
   const [period, setPeriod] = useState<GetStockHistoryPeriod>("5y");
   const [validation, setValidation] = useState("");
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [isDark, setIsDark] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshFromProvider, setRefreshFromProvider] = useState(false);
   const [intervalMs, setIntervalMs] = useState(INTERVALS[0].value);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -115,6 +124,19 @@ function StockDashboard() {
     document.addEventListener("mousedown", closeIfOutside);
     return () => document.removeEventListener("mousedown", closeIfOutside);
   }, []);
+  useEffect(() => {
+    function closeSuggestionsIfOutside(event: MouseEvent) {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(event.target as Node)) {
+        setSuggestionsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", closeSuggestionsIfOutside);
+    return () => document.removeEventListener("mousedown", closeSuggestionsIfOutside);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(symbolInput.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [symbolInput]);
 
   const params = useMemo(
     () => ({
@@ -127,6 +149,17 @@ function StockDashboard() {
   const query = useGetStockHistory(params, {
     query: { enabled: !!symbol, queryKey: getGetStockHistoryQueryKey(params), retry: false },
   });
+  const searchParams = useMemo(() => ({ query: debouncedSearch }), [debouncedSearch]);
+  const searchMatchesInput = debouncedSearch === symbolInput.trim();
+  const stockSearch = useGetStockSearch(searchParams, {
+    query: {
+      enabled: suggestionsOpen && symbolInput.trim().length >= 2 && searchMatchesInput,
+      queryKey: getGetStockSearchQueryKey(searchParams),
+      retry: false,
+      staleTime: 30_000,
+    },
+  });
+  const searchResults = stockSearch.data?.results ?? [];
   const history = query.data;
   const loading = query.isLoading || query.isFetching;
   useEffect(() => {
@@ -157,12 +190,45 @@ function StockDashboard() {
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const nextSymbol = symbolInput.trim().toUpperCase();
+    if (nextSymbol.length > 80) {
+      setValidation("Search using a ticker or company name up to 80 characters.");
+      return;
+    }
     if (!SYMBOL_PATTERN.test(nextSymbol)) {
-      setValidation("Enter a ticker using 1–20 letters, numbers, dots, dashes, underscores, or equals signs.");
+      setSuggestionsOpen(true);
+      setValidation("Choose a matching company from the suggestions to use its ticker.");
       return;
     }
     setValidation("");
     setSymbol(nextSymbol);
+    setSuggestionsOpen(false);
+  };
+  const selectSuggestion = (result: StockSearchResult) => {
+    setSymbolInput(result.symbol);
+    setValidation("");
+    setActiveSuggestion(-1);
+    setSuggestionsOpen(false);
+  };
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+      return;
+    }
+    if (event.key === "ArrowDown" && suggestionsOpen && searchResults.length > 0) {
+      event.preventDefault();
+      setActiveSuggestion((current) => Math.min(current + 1, searchResults.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp" && suggestionsOpen && searchResults.length > 0) {
+      event.preventDefault();
+      setActiveSuggestion((current) => Math.max(current - 1, 0));
+      return;
+    }
+    if (event.key === "Enter" && suggestionsOpen && searchResults.length > 0) {
+      event.preventDefault();
+      selectSuggestion(searchResults[activeSuggestion >= 0 ? activeSuggestion : 0]!);
+    }
   };
   const refresh = () => {
     if (!refreshFromProvider) {
@@ -226,12 +292,61 @@ function StockDashboard() {
         </div>
         <div className="w-full lg:max-w-[590px]">
           <form onSubmit={submitSearch} className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <div className="min-w-0 flex-1">
-              <label htmlFor="ticker-input" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[.16em] text-muted-foreground">Ticker symbol</label>
-              <div className={`flex h-11 items-center gap-2 rounded-lg border bg-card px-3 focus-within:ring-2 focus-within:ring-primary/20 ${validation ? "border-destructive" : "border-border"}`}>
-                <Search size={16} className="shrink-0 text-muted-foreground" />
-                <input id="ticker-input" data-testid="input-ticker" value={symbolInput} onChange={event => { setSymbolInput(event.target.value); if (validation) setValidation(""); }} placeholder="Search a ticker, e.g. MSFT" className="mono-data min-w-0 flex-1 bg-transparent text-sm uppercase outline-none placeholder:font-sans placeholder:normal-case placeholder:tracking-normal placeholder:text-muted-foreground" maxLength={20} aria-invalid={!!validation} />
-                <span className="hidden text-[10px] text-muted-foreground sm:block">NYSE · NASDAQ</span>
+            <div className="min-w-0 flex-1" ref={searchBoxRef}>
+              <label htmlFor="ticker-input" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[.16em] text-muted-foreground">Company or ticker</label>
+              <div className="relative">
+                <div className={`flex h-11 items-center gap-2 rounded-lg border bg-card px-3 focus-within:ring-2 focus-within:ring-primary/20 ${validation ? "border-destructive" : "border-border"}`}>
+                  <Search size={16} className="shrink-0 text-muted-foreground" />
+                  <input
+                    id="ticker-input"
+                    data-testid="input-ticker"
+                    value={symbolInput}
+                    onFocus={() => setSuggestionsOpen(true)}
+                    onKeyDown={handleSearchKeyDown}
+                    onChange={event => {
+                      setSymbolInput(event.target.value);
+                      setActiveSuggestion(-1);
+                      setSuggestionsOpen(true);
+                      if (validation) setValidation("");
+                    }}
+                    placeholder="Company name or ticker, e.g. Apple or AAPL"
+                    className="mono-data min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:font-sans placeholder:normal-case placeholder:tracking-normal placeholder:text-muted-foreground"
+                    maxLength={80}
+                    aria-label="Search by company name or ticker"
+                    aria-autocomplete="list"
+                    aria-expanded={suggestionsOpen && symbolInput.trim().length >= 2}
+                    aria-controls="stock-search-suggestions"
+                    aria-activedescendant={activeSuggestion >= 0 ? `stock-search-option-${activeSuggestion}` : undefined}
+                    aria-invalid={!!validation}
+                  />
+                  <span className="hidden text-[10px] text-muted-foreground sm:block">NYSE · NASDAQ</span>
+                </div>
+                {suggestionsOpen && symbolInput.trim().length >= 2 && <div
+                  id="stock-search-suggestions"
+                  role="listbox"
+                  aria-label="Matching stocks"
+                  className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+                >
+                  {(!searchMatchesInput || stockSearch.isFetching) && <div role="status" className="px-3 py-3 text-xs text-muted-foreground">Searching stocks…</div>}
+                  {searchMatchesInput && stockSearch.isError && <div role="alert" className="px-3 py-3 text-xs text-destructive">Stock search is unavailable. Try again, or enter a ticker directly.</div>}
+                  {searchMatchesInput && !stockSearch.isFetching && !stockSearch.isError && stockSearch.data?.results.length === 0 && <div role="status" className="px-3 py-3 text-xs text-muted-foreground">No matching listed stocks found.</div>}
+                  {searchMatchesInput && stockSearch.data?.results.map((result, index) => <button
+                    id={`stock-search-option-${index}`}
+                    key={result.symbol}
+                    type="button"
+                    role="option"
+                    aria-selected={activeSuggestion === index}
+                    onMouseEnter={() => setActiveSuggestion(index)}
+                    onClick={() => selectSuggestion(result)}
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted ${activeSuggestion === index ? "bg-muted" : ""}`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-medium text-foreground">{result.name}</span>
+                      <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{result.exchange || "Listed equity"}</span>
+                    </span>
+                    <span className="mono-data shrink-0 text-xs font-semibold text-primary">{result.symbol}</span>
+                  </button>)}
+                </div>}
               </div>
               {validation && <p role="alert" className="mt-1.5 text-xs text-destructive">{validation}</p>}
             </div>

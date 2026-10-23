@@ -13,6 +13,39 @@ tags:
   - name: stocks
     description: Historical stock market analysis
 paths:
+  /stocks/search:
+    get:
+      operationId: getStockSearch
+      tags: [stocks]
+      summary: Search listed stocks by company name or ticker
+      description: Returns matching listed equities from Yahoo Finance.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 80
+      responses:
+        "200":
+          description: Matching listed stocks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockSearchResponse"
+        "400":
+          description: Invalid search query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "502":
+          description: Stock search provider unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /healthz:
     get:
       operationId: healthCheck
@@ -80,6 +113,25 @@ paths:
                 $ref: "#/components/schemas/ApiError"
 components:
   schemas:
+    StockSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/StockSearchResult"
+    StockSearchResult:
+      type: object
+      required: [symbol, name, exchange]
+      properties:
+        symbol:
+          type: string
+          pattern: "^[A-Za-z0-9.^=_-]{1,20}$"
+        name:
+          type: string
+        exchange:
+          type: ["string", "null"]
     HealthStatus:
       type: object
       properties:

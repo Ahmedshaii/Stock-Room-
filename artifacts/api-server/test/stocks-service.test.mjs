@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GetStockHistoryQueryParams } from "@workspace/api-zod";
+import {
+  GetStockHistoryQueryParams,
+  GetStockSearchQueryParams,
+} from "@workspace/api-zod";
 import {
   buildHistoryPayload,
   calculateWilderRsi,
   getStockHistory,
   rollingMean,
+  searchStockSymbols,
   startForPeriod,
   StockDataError,
 } from "../src/lib/stocks-service.ts";
@@ -43,6 +47,13 @@ function yahooResponse(result, error = null) {
       error,
     },
   }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function yahooSearchResponse(quotes) {
+  return new Response(JSON.stringify({ quotes }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -226,6 +237,114 @@ test("ticker validation accepts representative US and international Yahoo format
   }
   assert.equal(GetStockHistoryQueryParams.safeParse({ symbol: "INVALID/FORMAT" }).success, false);
   assert.equal(GetStockHistoryQueryParams.safeParse({ symbol: "AAPL", period: "10y" }).success, false);
+});
+
+test("company-name searches return matching equity names and ticker symbols", async () => {
+  let requestedUrl;
+  const results = await searchStockSymbols("Apple", {
+    fetcher: async (url) => {
+      requestedUrl = url;
+      return yahooSearchResponse([
+        {
+          symbol: "AAPL",
+          quoteType: "EQUITY",
+          longname: "Apple Inc.",
+          exchDisp: "NasdaqGS",
+        },
+        {
+          symbol: "APLE",
+          quoteType: "EQUITY",
+          shortname: "Apple Hospitality REIT, Inc.",
+          exchange: "NYS",
+        },
+        {
+          symbol: "SMSFT=F",
+          quoteType: "FUTURE",
+          shortname: "Microsoft stock future",
+        },
+        {
+          symbol: "BAD/SYMBOL",
+          quoteType: "EQUITY",
+          longname: "Invalid symbol result",
+        },
+        {
+          symbol: "AAPL",
+          quoteType: "EQUITY",
+          longname: "Duplicate Apple result",
+        },
+      ]);
+    },
+  });
+
+  assert.equal(requestedUrl.searchParams.get("q"), "Apple");
+  assert.deepEqual(results.results, [
+    { symbol: "AAPL", name: "Apple Inc.", exchange: "NasdaqGS" },
+    { symbol: "APLE", name: "Apple Hospitality REIT, Inc.", exchange: "NYS" },
+  ]);
+});
+
+test("ticker searches prioritize exact ticker matches for common listed stocks", async () => {
+  for (const [symbol, name] of [
+    ["AAPL", "Apple Inc."],
+    ["MSFT", "Microsoft Corporation"],
+    ["TSLA", "Tesla, Inc."],
+    ["AMZN", "Amazon.com, Inc."],
+  ]) {
+    const results = await searchStockSymbols(symbol, {
+      fetcher: async (url) => {
+        assert.equal(url.searchParams.get("q"), symbol);
+        return yahooSearchResponse([
+          {
+            symbol: "OTHER",
+            quoteType: "EQUITY",
+            longname: "Another public company",
+          },
+          { symbol, quoteType: "EQUITY", longname: name },
+        ]);
+      },
+    });
+
+    assert.equal(results.results[0]?.symbol, symbol);
+    assert.equal(results.results[0]?.name, name);
+  }
+});
+
+test("stock search rejects empty or oversized input and safely returns no matches", async () => {
+  assert.equal(GetStockSearchQueryParams.safeParse({ query: "Apple" }).success, true);
+  assert.equal(GetStockSearchQueryParams.safeParse({ query: "AAPL" }).success, true);
+  assert.equal(GetStockSearchQueryParams.safeParse({ query: "" }).success, false);
+  assert.equal(
+    GetStockSearchQueryParams.safeParse({ query: "A".repeat(81) }).success,
+    false,
+  );
+  await assert.rejects(
+    searchStockSymbols("   "),
+    (error) => error instanceof StockDataError && error.statusCode === 400,
+  );
+  await assert.rejects(
+    searchStockSymbols("A".repeat(81)),
+    (error) => error instanceof StockDataError && error.statusCode === 400,
+  );
+
+  const noMatches = await searchStockSymbols("NoSuchCompany", {
+    fetcher: async () => yahooSearchResponse([]),
+  });
+  assert.deepEqual(noMatches.results, []);
+});
+
+test("stock search converts provider failures and malformed responses to safe errors", async () => {
+  await assert.rejects(
+    searchStockSymbols("Microsoft", {
+      fetcher: async () => new Response("", { status: 503 }),
+    }),
+    (error) => error instanceof StockDataError && error.statusCode === 502 && /temporarily unavailable/.test(error.message),
+  );
+  await assert.rejects(
+    searchStockSymbols("Microsoft", {
+      fetcher: async () => new Response("not json", { status: 200 }),
+    }),
+    (error) => error instanceof StockDataError && error.statusCode === 502 && /unreadable/.test(error.message),
+  );
 });
 
 test("Yahoo requests encode ticker symbols and align each period with indicator pre-roll", async () => {
