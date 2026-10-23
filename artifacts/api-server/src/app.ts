@@ -25,7 +25,9 @@ app.use(
     },
   }),
 );
-app.use(cors());
+// Public market history requires no credentials; wildcard CORS remains compatible
+// with the hosted UI and does not enable credentialed cross-origin requests.
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
