@@ -46,6 +46,13 @@ paths:
             type: string
             enum: [1y, 3y, 5y, 7y]
             default: 5y
+        - name: refresh
+          in: query
+          required: false
+          description: Bypass cached history and fetch current provider data.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: Historical prices and derived analysis

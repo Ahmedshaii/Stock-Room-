@@ -96,6 +96,7 @@ function StockDashboard() {
   const [isDark, setIsDark] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshFromProvider, setRefreshFromProvider] = useState(false);
   const [intervalMs, setIntervalMs] = useState(INTERVALS[0].value);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
@@ -115,12 +116,22 @@ function StockDashboard() {
     return () => document.removeEventListener("mousedown", closeIfOutside);
   }, []);
 
-  const params = useMemo(() => ({ symbol, period }), [symbol, period]);
+  const params = useMemo(
+    () => ({
+      symbol,
+      period,
+      ...(refreshFromProvider ? { refresh: true } : {}),
+    }),
+    [symbol, period, refreshFromProvider],
+  );
   const query = useGetStockHistory(params, {
     query: { enabled: !!symbol, queryKey: getGetStockHistoryQueryKey(params), retry: false },
   });
   const history = query.data;
   const loading = query.isLoading || query.isFetching;
+  useEffect(() => {
+    if (autoRefresh) setRefreshFromProvider(true);
+  }, [autoRefresh]);
   useEffect(() => {
     if (!autoRefresh || !symbol) return;
     const timer = window.setInterval(() => {
@@ -153,7 +164,13 @@ function StockDashboard() {
     setValidation("");
     setSymbol(nextSymbol);
   };
-  const refresh = () => { void query.refetch(); };
+  const refresh = () => {
+    if (!refreshFromProvider) {
+      setRefreshFromProvider(true);
+      return;
+    }
+    void query.refetch();
+  };
   const updatedLabel = formatUpdated(history?.updatedAt);
 
   return <main className="stock-shell min-h-[100dvh] bg-background text-foreground">

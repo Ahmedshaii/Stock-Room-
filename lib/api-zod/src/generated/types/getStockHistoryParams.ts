@@ -13,4 +13,8 @@ export type GetStockHistoryParams = {
  */
 symbol: string;
 period?: GetStockHistoryPeriod;
+/**
+ * Bypass cached history and fetch current provider data.
+ */
+refresh?: boolean;
 };

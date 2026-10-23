@@ -23,10 +23,12 @@ export const HealthCheckResponse = zod.object({
  */
 export const getStockHistoryQuerySymbolRegExp = new RegExp('^[A-Za-z0-9.^=_-]{1,20}$');
 export const getStockHistoryQueryPeriodDefault = `5y`;
+export const getStockHistoryQueryRefreshDefault = false;
 
 export const GetStockHistoryQueryParams = zod.object({
   "symbol": zod.coerce.string().regex(getStockHistoryQuerySymbolRegExp),
-  "period": zod.enum(['1y', '3y', '5y', '7y']).default(getStockHistoryQueryPeriodDefault)
+  "period": zod.enum(['1y', '3y', '5y', '7y']).default(getStockHistoryQueryPeriodDefault),
+  "refresh": zod.coerce.boolean().default(getStockHistoryQueryRefreshDefault).describe('Bypass cached history and fetch current provider data.')
 })
 
 export const GetStockHistoryResponse = zod.object({

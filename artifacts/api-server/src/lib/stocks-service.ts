@@ -28,6 +28,7 @@ type StockHistoryDependencies = {
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
   cache?: HistoryCache;
+  forceRefresh?: boolean;
   onCacheFailure?: (operation: "read" | "write", error: unknown) => void;
 };
 
@@ -197,20 +198,32 @@ function toHistoryRows(result: YahooChartResult): PriceBar[] {
     return Array.isArray(values) ? values[index] : null;
   };
 
-  return timestamps.flatMap((timestamp, index) => {
+  const timestampedRows = timestamps.flatMap((timestamp, index) => {
     const date = formatSessionDate(timestamp, formatter);
     const close = toFiniteOrNull(closes[index]);
     if (date === null || close === null) return [];
 
     return [{
-      date,
-      open: toFiniteOrNull(getValueAt("open", index)),
-      high: toFiniteOrNull(getValueAt("high", index)),
-      low: toFiniteOrNull(getValueAt("low", index)),
-      close,
-      volume: toFiniteOrNull(getValueAt("volume", index)),
+      timestamp,
+      bar: {
+        date,
+        open: toFiniteOrNull(getValueAt("open", index)),
+        high: toFiniteOrNull(getValueAt("high", index)),
+        low: toFiniteOrNull(getValueAt("low", index)),
+        close,
+        volume: toFiniteOrNull(getValueAt("volume", index)),
+      },
     }];
   });
+
+  timestampedRows.sort((left, right) => left.timestamp - right.timestamp);
+  const latestBarBySession = new Map<string, PriceBar>();
+  for (const { bar } of timestampedRows) {
+    latestBarBySession.set(bar.date, bar);
+  }
+  return [...latestBarBySession.values()].sort((left, right) =>
+    left.date.localeCompare(right.date),
+  );
 }
 
 export function buildHistoryPayload(
@@ -219,10 +232,21 @@ export function buildHistoryPayload(
   result: YahooChartResult,
   updatedAt = new Date(),
 ) {
-  const bars = toHistoryRows(result);
+  const sessionDateFormatter = getSessionDateFormatter(result.meta);
+  const asOfDate = formatSessionDate(
+    Math.floor(updatedAt.getTime() / 1_000),
+    sessionDateFormatter,
+  );
+  if (!asOfDate) {
+    throw new StockDataError(
+      "Yahoo Finance returned an invalid historical date.",
+      502,
+    );
+  }
+
+  const bars = toHistoryRows(result).filter((bar) => bar.date <= asOfDate);
   if (bars.length === 0) return null;
 
-  const sessionDateFormatter = getSessionDateFormatter(result.meta);
   const periodStart = startForPeriod(period, updatedAt);
   const periodStartDate = formatSessionDate(
     Math.floor(periodStart.getTime() / 1_000),
@@ -444,7 +468,7 @@ export async function getStockHistory(
   dependencies: StockHistoryDependencies = {},
 ): Promise<StockHistoryResponse> {
   const requestKey =
-    dependencies.cache?.key ?? `${symbol.toUpperCase()}:${period}`;
+    `${dependencies.cache?.key ?? `${symbol.toUpperCase()}:${period}`}${dependencies.forceRefresh ? ":fresh" : ""}`;
   const existing = inFlightHistories.get(requestKey);
   if (existing) return existing;
 
@@ -466,7 +490,7 @@ async function loadStockHistory(
 ): Promise<StockHistoryResponse> {
   const now = dependencies.now?.() ?? new Date();
   const cache = dependencies.cache;
-  if (cache) {
+  if (cache && !dependencies.forceRefresh) {
     try {
       const cached = await cache.read();
       if (cached !== null) {

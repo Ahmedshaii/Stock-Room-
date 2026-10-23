@@ -115,6 +115,86 @@ test("invalid timestamps and null or non-finite closes are filtered without corr
   assert.deepEqual(rows?.rows.map((row) => row.date), ["2026-01-01"]);
 });
 
+test("unsorted and duplicate sessions are normalized before indicator calculations", () => {
+  const observations = Array.from({ length: 201 }, (_, index) => ({
+    timestamp: Date.UTC(2026, 0, 1 + index) / 1_000,
+    close: 100 + index,
+  }));
+  const finalSession = observations.at(-1);
+  assert.ok(finalSession);
+  observations.push(
+    { timestamp: finalSession.timestamp + 60 * 60, close: 999 },
+    { timestamp: finalSession.timestamp + 4 * 60 * 60, close: 301 },
+    { timestamp: Date.parse("2026-10-20T00:00:00.000Z") / 1_000, close: 1e9 },
+  );
+  observations.reverse();
+
+  const normalizedCloses = Array.from({ length: 200 }, (_, index) => 100 + index);
+  normalizedCloses.push(301);
+  const history = buildHistoryPayload(
+    "NORMALIZED",
+    "5y",
+    makeResult({
+      timestamps: observations.map(({ timestamp }) => timestamp),
+      closes: observations.map(({ close }) => close),
+    }),
+    FIXED_NOW,
+  );
+
+  assert.equal(history?.rows.length, 201);
+  assert.equal(new Set(history?.rows.map((row) => row.date)).size, 201);
+  assert.deepEqual(
+    history?.rows.map((row) => row.date),
+    history?.rows.map((row) => row.date).slice().sort(),
+  );
+  assert.equal(history?.latest.close, 301);
+  assert.equal(
+    history?.latest.sma50,
+    rollingMean(normalizedCloses, normalizedCloses.length - 1, 50),
+  );
+  assert.equal(
+    history?.latest.sma200,
+    rollingMean(normalizedCloses, normalizedCloses.length - 1, 200),
+  );
+  assert.equal(
+    history?.latest.rsi14,
+    calculateWilderRsi(normalizedCloses, 14).at(-1),
+  );
+  assert.equal(history?.latest.date, "2026-07-20");
+});
+
+test("missing closes are excluded without inserting zeroes into indicators", () => {
+  const timestamps = Array.from(
+    { length: 205 },
+    (_, index) => Date.UTC(2026, 0, 1 + index) / 1_000,
+  );
+  const sourceCloses = Array.from({ length: 205 }, (_, index) => 100 + index);
+  sourceCloses[100] = null;
+  const validCloses = sourceCloses.filter((value) => value !== null);
+  const history = buildHistoryPayload(
+    "GAPPED",
+    "5y",
+    makeResult({ timestamps, closes: sourceCloses }),
+    FIXED_NOW,
+  );
+
+  assert.equal(history?.rows.length, 204);
+  assert.equal(history?.rows.some((row) => row.close === 0), false);
+  assert.equal(
+    history?.latest.sma50,
+    rollingMean(validCloses, validCloses.length - 1, 50),
+  );
+  assert.equal(
+    history?.latest.sma200,
+    rollingMean(validCloses, validCloses.length - 1, 200),
+  );
+  assert.equal(
+    history?.latest.rsi14,
+    calculateWilderRsi(validCloses, 14).at(-1),
+  );
+  assert.equal(history?.latest.close, validCloses.at(-1));
+});
+
 test("history rows and the summary align with Yahoo closes and indicators", () => {
   const timestamps = Array.from(
     { length: 201 },
@@ -148,16 +228,24 @@ test("ticker validation accepts representative US and international Yahoo format
   assert.equal(GetStockHistoryQueryParams.safeParse({ symbol: "AAPL", period: "10y" }).success, false);
 });
 
-test("Yahoo requests encode ticker symbols and align 1y, 3y, and 5y periods", async () => {
-  const expectedStarts = {
-    "1y": "2025-10-01T00:00:00.000Z",
-    "3y": "2023-10-01T00:00:00.000Z",
-    "5y": "2021-10-01T00:00:00.000Z",
+test("Yahoo requests encode ticker symbols and align each period with indicator pre-roll", async () => {
+  const expectedPeriodStarts = {
+    "1y": "2025-10-19T12:00:00.000Z",
+    "3y": "2023-10-19T12:00:00.000Z",
+    "5y": "2021-10-19T12:00:00.000Z",
+    "7y": "2019-10-19T12:00:00.000Z",
   };
   const symbols = ["AAPL", "BHP.AX", "7203.T", "EURUSD=X"];
 
-  for (const [period, expectedStart] of Object.entries(expectedStarts)) {
-    assert.equal(startForPeriod(period, FIXED_NOW).toISOString(), expectedStart);
+  for (const [period, expectedPeriodStart] of Object.entries(expectedPeriodStarts)) {
+    assert.equal(
+      startForPeriod(period, FIXED_NOW).toISOString(),
+      expectedPeriodStart,
+    );
+    const expectedFetchStart = startForPeriod(
+      "1y",
+      new Date(expectedPeriodStart),
+    ).toISOString();
     for (const symbol of symbols) {
       let requestUrl;
       const result = makeResult({
@@ -178,7 +266,7 @@ test("Yahoo requests encode ticker symbols and align 1y, 3y, and 5y periods", as
         sleep: async () => {},
       });
       assert.equal(decodeURIComponent(requestUrl.pathname.split("/").at(-1)), symbol);
-      assert.equal(requestUrl.searchParams.get("period1"), String(Date.parse(expectedStart) / 1_000));
+      assert.equal(requestUrl.searchParams.get("period1"), String(Date.parse(expectedFetchStart) / 1_000));
       assert.equal(
         requestUrl.searchParams.get("period2"),
         String(Math.floor(FIXED_NOW.getTime() / 1_000) + 86_400),
@@ -191,6 +279,120 @@ test("Yahoo requests encode ticker symbols and align 1y, 3y, and 5y periods", as
       assert.equal(history.latest.changePercent, 1);
     }
   }
+});
+
+test("new provider data is recalculated and the displayed summary matches its latest row", async () => {
+  const timestamps = Array.from(
+    { length: 201 },
+    (_, index) => Date.UTC(2026, 0, 1 + index) / 1_000,
+  );
+  const initialCloses = Array.from(
+    { length: 201 },
+    (_, index) => 100 + index / 3 + Math.sin(index / 5),
+  );
+  const updatedCloses = [...initialCloses];
+  updatedCloses[200] = updatedCloses[200] - 7;
+  let providerCalls = 0;
+  const fetcher = async () => {
+    providerCalls += 1;
+    return yahooResponse(makeResult({
+      timestamps,
+      closes: providerCalls === 1 ? initialCloses : updatedCloses,
+    }));
+  };
+
+  const first = await getStockHistory("UPDATED", "5y", {
+    now: () => FIXED_NOW,
+    fetcher,
+    sleep: async () => {},
+  });
+  const second = await getStockHistory("UPDATED", "5y", {
+    now: () => FIXED_NOW,
+    fetcher,
+    sleep: async () => {},
+  });
+  const lastRow = second.rows.at(-1);
+
+  assert.equal(providerCalls, 2);
+  assert.notEqual(first.latest.close, second.latest.close);
+  assert.equal(second.latest.close, updatedCloses.at(-1));
+  assert.equal(second.latest.date, lastRow?.date);
+  assert.equal(second.latest.close, lastRow?.close);
+  assert.equal(second.latest.sma50, lastRow?.sma50);
+  assert.equal(second.latest.sma200, lastRow?.sma200);
+  assert.equal(second.latest.rsi14, lastRow?.rsi14);
+  assert.equal(
+    lastRow?.sma50,
+    rollingMean(updatedCloses, updatedCloses.length - 1, 50),
+  );
+  assert.equal(
+    lastRow?.sma200,
+    rollingMean(updatedCloses, updatedCloses.length - 1, 200),
+  );
+  assert.equal(
+    lastRow?.rsi14,
+    calculateWilderRsi(updatedCloses, 14).at(-1),
+  );
+});
+
+test("forced refresh bypasses stale cached prices but replaces the cache with recalculated data", async () => {
+  const timestamps = Array.from(
+    { length: 201 },
+    (_, index) => Date.UTC(2026, 0, 1 + index) / 1_000,
+  );
+  const staleCloses = Array.from({ length: 201 }, (_, index) => 100 + index);
+  const freshCloses = [...staleCloses];
+  freshCloses[200] = 250;
+  const staleData = buildHistoryPayload(
+    "FRESH",
+    "5y",
+    makeResult({ symbol: "FRESH", timestamps, closes: staleCloses }),
+    FIXED_NOW,
+  );
+  let cacheReads = 0;
+  let cacheWrites = 0;
+  let providerCalls = 0;
+
+  const fresh = await getStockHistory("FRESH", "5y", {
+    now: () => FIXED_NOW,
+    forceRefresh: true,
+    cache: {
+      key: "forced-refresh-test",
+      read: async () => {
+        cacheReads += 1;
+        return staleData;
+      },
+      write: async () => {
+        cacheWrites += 1;
+      },
+    },
+    fetcher: async () => {
+      providerCalls += 1;
+      return yahooResponse(makeResult({
+        symbol: "FRESH",
+        timestamps,
+        closes: freshCloses,
+      }));
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(cacheReads, 0);
+  assert.equal(cacheWrites, 1);
+  assert.equal(providerCalls, 1);
+  assert.equal(fresh.latest.close, 250);
+  assert.equal(
+    fresh.latest.sma50,
+    rollingMean(freshCloses, freshCloses.length - 1, 50),
+  );
+  assert.equal(
+    fresh.latest.sma200,
+    rollingMean(freshCloses, freshCloses.length - 1, 200),
+  );
+  assert.equal(
+    fresh.latest.rsi14,
+    calculateWilderRsi(freshCloses, 14).at(-1),
+  );
 });
 
 test("cache read and write failures do not fail a valid history request", async () => {
