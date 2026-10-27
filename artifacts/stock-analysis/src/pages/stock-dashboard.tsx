@@ -23,6 +23,22 @@ const PERIODS: { value: GetStockHistoryPeriod; label: string }[] = [
   { value: "5y", label: "5 years" },
   { value: "7y", label: "7 years" },
 ];
+type ChartRange = "1M" | "6M" | "1Y" | "5Y" | "MAX";
+const CHART_RANGES: ChartRange[] = ["1M", "6M", "1Y", "5Y", "MAX"];
+const CHART_RANGE_MONTHS: Record<ChartRange, number> = {
+  "1M": 1,
+  "6M": 6,
+  "1Y": 12,
+  "5Y": 60,
+  MAX: 84,
+};
+const CHART_RANGE_PERIOD: Record<ChartRange, GetStockHistoryPeriod> = {
+  "1M": "1y",
+  "6M": "1y",
+  "1Y": "1y",
+  "5Y": "5y",
+  MAX: "7y",
+};
 const INTERVALS = [
   { label: "5 minutes", value: 5 * 60 * 1000 },
   { label: "15 minutes", value: 15 * 60 * 1000 },
@@ -51,6 +67,21 @@ function money(value: number, currency: string | null) {
 }
 function number(value: number | null | undefined, digits = 2) {
   return value == null ? "—" : value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+function volume(value: number | null | undefined) {
+  return value == null ? "N/A" : value.toLocaleString("en-US");
+}
+function subtractCalendarMonths(dateString: string, monthsToSubtract: number) {
+  const [year, month, day] = dateString.split("-").map(Number);
+  const monthIndex = year! * 12 + (month! - 1) - monthsToSubtract;
+  const targetYear = Math.floor(monthIndex / 12);
+  const targetMonth = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const targetDay = Math.min(day!, lastDay);
+  return `${targetYear}-${String(targetMonth + 1).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}`;
+}
+function periodYears(period: GetStockHistoryPeriod) {
+  return Number.parseInt(period, 10);
 }
 function formatUpdated(value?: string) {
   if (!value) return "Waiting for data";
@@ -83,13 +114,13 @@ function ChartTooltip({ active, payload, label, currency }: { active?: boolean; 
   </div>;
 }
 
-function Metric({ label, value, detail, accent, testId }: { label: string; value: string; detail: string; accent?: string; testId: string }) {
-  return <div className="min-w-0 px-5 py-5 first:pl-0 last:pr-0">
+function Metric({ label, value, detail, accent, testId, className = "" }: { label: string; value: string; detail: string; accent?: string; testId: string; className?: string }) {
+  return <div className={`min-w-0 px-5 py-5 first:pl-0 last:pr-0 ${className}`}>
     <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[.13em] text-muted-foreground">
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accent || "hsl(var(--primary))" }} />{label}
     </div>
-    <div data-testid={testId} className="mono-data mt-3 truncate text-[26px] leading-none tracking-[-.05em] text-foreground sm:text-[30px]">{value}</div>
-    <div className="mt-2 truncate text-xs text-muted-foreground">{detail}</div>
+    <div data-testid={testId} className="mono-data mt-3 whitespace-nowrap text-[19px] leading-none tracking-[-.05em] text-foreground sm:text-[23px] xl:text-[30px]">{value}</div>
+    <div className="mt-2 text-[11px] leading-4 text-muted-foreground sm:text-xs">{detail}</div>
   </div>;
 }
 
@@ -97,6 +128,7 @@ function StockDashboard() {
   const [symbolInput, setSymbolInput] = useState("AAPL");
   const [symbol, setSymbol] = useState("AAPL");
   const [period, setPeriod] = useState<GetStockHistoryPeriod>("5y");
+  const [chartRange, setChartRange] = useState<ChartRange>("5Y");
   const [validation, setValidation] = useState("");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
@@ -149,6 +181,26 @@ function StockDashboard() {
   const query = useGetStockHistory(params, {
     query: { enabled: !!symbol, queryKey: getGetStockHistoryQueryKey(params), retry: false },
   });
+  const chartFetchPeriod =
+    periodYears(CHART_RANGE_PERIOD[chartRange]) > periodYears(period)
+      ? CHART_RANGE_PERIOD[chartRange]
+      : period;
+  const chartParams = useMemo(
+    () => ({
+      symbol,
+      period: chartFetchPeriod,
+      ...(refreshFromProvider ? { refresh: true } : {}),
+    }),
+    [symbol, chartFetchPeriod, refreshFromProvider],
+  );
+  const needsLongerChartHistory = chartFetchPeriod !== period;
+  const chartQuery = useGetStockHistory(chartParams, {
+    query: {
+      enabled: !!symbol && needsLongerChartHistory,
+      queryKey: getGetStockHistoryQueryKey(chartParams),
+      retry: false,
+    },
+  });
   const searchParams = useMemo(() => ({ query: debouncedSearch }), [debouncedSearch]);
   const searchMatchesInput = debouncedSearch === symbolInput.trim();
   const stockSearch = useGetStockSearch(searchParams, {
@@ -162,6 +214,27 @@ function StockDashboard() {
   const searchResults = stockSearch.data?.results ?? [];
   const history = query.data;
   const loading = query.isLoading || query.isFetching;
+  const chartHistory = needsLongerChartHistory ? chartQuery.data : history;
+  const chartLoading = needsLongerChartHistory && (chartQuery.isLoading || chartQuery.isFetching);
+  const chartRows = useMemo(() => {
+    const availableRows = chartHistory?.rows ?? [];
+    const sortedRows = availableRows.slice().sort((left, right) => left.date.localeCompare(right.date));
+    if (chartRange === "MAX") return sortedRows;
+    const latestDate = chartHistory?.latest.date ?? sortedRows.at(-1)?.date;
+    if (!latestDate) return [];
+    const cutoff = subtractCalendarMonths(latestDate, CHART_RANGE_MONTHS[chartRange]);
+    return sortedRows.filter((row) => row.date >= cutoff);
+  }, [chartHistory, chartRange]);
+  const expectedChartStart = chartHistory
+    ? subtractCalendarMonths(chartHistory.latest.date, CHART_RANGE_MONTHS[chartRange])
+    : null;
+  const chartHasPartialHistory = !!(
+    chartRows[0] &&
+    expectedChartStart &&
+    Date.parse(`${chartRows[0].date}T00:00:00.000Z`) -
+      Date.parse(`${expectedChartStart}T00:00:00.000Z`) >
+      10 * 24 * 60 * 60 * 1_000
+  );
   useEffect(() => {
     if (autoRefresh) setRefreshFromProvider(true);
   }, [autoRefresh]);
@@ -169,13 +242,43 @@ function StockDashboard() {
     if (!autoRefresh || !symbol) return;
     const timer = window.setInterval(() => {
       void queryClient.invalidateQueries({ queryKey: getGetStockHistoryQueryKey(params) });
+      if (needsLongerChartHistory) {
+        void queryClient.invalidateQueries({
+          queryKey: getGetStockHistoryQueryKey(chartParams),
+        });
+      }
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, intervalMs, params, queryClient, symbol]);
+  }, [autoRefresh, chartParams, intervalMs, needsLongerChartHistory, params, queryClient, symbol]);
 
   const rows = history?.rows || [];
-  const chronologicalRows = useMemo(() => rows.slice().sort((a, b) => a.date.localeCompare(b.date)), [rows]);
   const tableRows = useMemo(() => rows.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12), [rows]);
+  const financialMetrics = useMemo(() => {
+    const firstDate = rows[0]?.date;
+    const latestDate = history?.latest.date;
+    if (!firstDate || !latestDate) {
+      return { high: null, low: null, hasFull52Weeks: false };
+    }
+
+    const cutoff = subtractCalendarMonths(latestDate, 12);
+    const yearRows = rows.filter((row) => row.date >= cutoff);
+    const availableDays =
+      (Date.parse(`${latestDate}T00:00:00.000Z`) -
+        Date.parse(`${firstDate}T00:00:00.000Z`)) /
+      (24 * 60 * 60 * 1_000);
+    const hasFull52Weeks = availableDays >= 350;
+    const highs = yearRows.flatMap((row) =>
+      row.high != null && Number.isFinite(row.high) ? [row.high] : [],
+    );
+    const lows = yearRows.flatMap((row) =>
+      row.low != null && Number.isFinite(row.low) ? [row.low] : [],
+    );
+    return {
+      high: hasFull52Weeks && highs.length > 0 ? Math.max(...highs) : null,
+      low: hasFull52Weeks && lows.length > 0 ? Math.min(...lows) : null,
+      hasFull52Weeks,
+    };
+  }, [history, rows]);
   const currency = history?.currency || null;
   const change = history?.latest.changePercent ?? 0;
   const chartAxisColor = isDark ? "#a5ada9" : "#777e78";
@@ -205,6 +308,7 @@ function StockDashboard() {
   };
   const selectSuggestion = (result: StockSearchResult) => {
     setSymbolInput(result.symbol);
+    setSymbol(result.symbol);
     setValidation("");
     setActiveSuggestion(-1);
     setSuggestionsOpen(false);
@@ -236,6 +340,7 @@ function StockDashboard() {
       return;
     }
     void query.refetch();
+    if (needsLongerChartHistory) void chartQuery.refetch();
   };
   const updatedLabel = formatUpdated(history?.updatedAt);
 
@@ -396,66 +501,103 @@ function StockDashboard() {
           <Metric label="RSI · 14 day" value={history.latest.rsi14 == null ? "—" : number(history.latest.rsi14, 1)} detail="Wilder relative strength index" accent={SERIES.rsi} testId="metric-rsi14" />
         </section>
 
+        <section className="enter enter-delay-2 mb-6 grid grid-cols-2 divide-x divide-y divide-border rounded-xl border border-border bg-card px-5 sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0 sm:px-7" aria-label="Market and valuation metrics">
+          <Metric label="Market cap" value="N/A" detail="Not supplied by daily history API" testId="metric-market-cap" />
+          <Metric label="P/E ratio" value="N/A" detail="Not supplied by daily history API" testId="metric-pe-ratio" />
+          <Metric label="52-week high" value={financialMetrics.high == null ? "N/A" : money(financialMetrics.high, currency)} detail={financialMetrics.hasFull52Weeks ? "From daily session highs" : "Full 52-week history unavailable"} testId="metric-52-week-high" />
+          <Metric label="52-week low" value={financialMetrics.low == null ? "N/A" : money(financialMetrics.low, currency)} detail={financialMetrics.hasFull52Weeks ? "From daily session lows" : "Full 52-week history unavailable"} testId="metric-52-week-low" />
+          <Metric label="Trading volume" value={volume(rows.at(-1)?.volume)} detail="Latest reported session" testId="metric-trading-volume" className="col-span-2 sm:col-span-1" />
+        </section>
+
         <section className="enter enter-delay-3 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.8fr)_minmax(300px,.9fr)]">
           <article className="panel min-w-0 p-4 sm:p-5">
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div><div className="flex items-center gap-2"><TrendingUp size={16} className="text-primary" /><h3 className="text-sm font-semibold tracking-tight">Price history</h3></div>
-                <p className="mt-1.5 text-xs text-muted-foreground">Daily close, with 50- and 200-session averages</p></div>
+                <p className="mt-1.5 text-xs text-muted-foreground">Daily close, with 50- and 200-session averages · {chartRange}</p></div>
               <ExportButton
                 label="Export price chart data"
-                filename={`${symbol.toLowerCase()}-price-history-${period}.csv`}
-                data={chronologicalRows.map(row => ({
+                filename={`${symbol.toLowerCase()}-price-history-${chartRange.toLowerCase()}.csv`}
+                data={chartRows.map(row => ({
                   date: row.date, close: row.close, sma50: row.sma50, sma200: row.sma200,
                 }))}
               />
+            </div>
+            <div className="mb-4 flex flex-wrap gap-1.5" role="group" aria-label="Price chart time range">
+              {CHART_RANGES.map((range) => <button
+                key={range}
+                type="button"
+                onClick={() => setChartRange(range)}
+                aria-pressed={chartRange === range}
+                data-testid={`chart-range-${range.toLowerCase()}`}
+                className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${chartRange === range ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+              >{range}</button>)}
             </div>
             <div className="mb-3 flex flex-wrap gap-x-4 gap-y-2">
               {[["Close", SERIES.close], ["SMA 50", SERIES.sma50], ["SMA 200", SERIES.sma200]].map(([label, color]) => <span key={label} className="inline-flex items-center gap-2 text-[11px] text-muted-foreground"><i className="h-[2px] w-4 rounded" style={{ backgroundColor: color }} />{label}</span>)}
             </div>
             <div className="h-[280px] w-full sm:h-[330px]">
-              <ResponsiveContainer width="100%" height="100%" debounce={0}>
-                <AreaChart data={chronologicalRows} margin={{ top: 8, right: 4, bottom: 0, left: 2 }}>
-                  <defs><linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={SERIES.close} stopOpacity=".19" /><stop offset="100%" stopColor={SERIES.close} stopOpacity="0" /></linearGradient></defs>
-                  <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="2 5" />
-                  <XAxis dataKey="date" tickFormatter={value => shortDate(value)} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} minTickGap={38} />
-                  <YAxis domain={["auto", "auto"]} tickFormatter={value => Number(value).toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 1 })} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} width={44} />
-                  <Tooltip content={<ChartTooltip currency={currency} />} cursor={{ stroke: gridColor, strokeDasharray: "3 3" }} />
-                  <Area type="monotone" dataKey="close" name="Close" stroke={SERIES.close} strokeWidth={2} fill="url(#priceFill)" dot={false} activeDot={{ r: 3, fill: SERIES.close, stroke: "hsl(var(--card))", strokeWidth: 2 }} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="sma50" name="SMA 50" stroke={SERIES.sma50} strokeWidth={1.4} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="sma200" name="SMA 200" stroke={SERIES.sma200} strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
+              {chartLoading
+                ? <div role="status" aria-label="Loading selected price range" className="flex h-full items-center justify-center rounded-lg bg-muted/30 text-sm text-muted-foreground">Loading {chartRange} history…</div>
+                : needsLongerChartHistory && chartQuery.isError
+                  ? <div role="alert" className="flex h-full flex-col items-center justify-center gap-2 rounded-lg bg-muted/30 px-4 text-center">
+                    <p className="text-sm text-muted-foreground">Could not load {chartRange} price history. The provider may have no data for this range or be temporarily unavailable.</p>
+                    <button type="button" onClick={() => void chartQuery.refetch()} className="text-xs font-semibold text-primary hover:underline">Retry chart history</button>
+                  </div>
+                  : chartRows.length === 0
+                    ? <div role="status" className="flex h-full items-center justify-center rounded-lg bg-muted/30 px-4 text-center text-sm text-muted-foreground">No daily price history is available for this range.</div>
+                    : <ResponsiveContainer width="100%" height="100%" debounce={0}>
+                      <AreaChart data={chartRows} margin={{ top: 8, right: 4, bottom: 0, left: 2 }}>
+                        <defs><linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={SERIES.close} stopOpacity=".19" /><stop offset="100%" stopColor={SERIES.close} stopOpacity="0" /></linearGradient></defs>
+                        <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="2 5" />
+                        <XAxis dataKey="date" tickFormatter={value => shortDate(value)} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} minTickGap={38} />
+                        <YAxis domain={["auto", "auto"]} tickFormatter={value => Number(value).toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 1 })} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} width={44} />
+                        <Tooltip content={<ChartTooltip currency={currency} />} cursor={{ stroke: gridColor, strokeDasharray: "3 3" }} />
+                        <Area type="monotone" dataKey="close" name="Close" stroke={SERIES.close} strokeWidth={2} fill="url(#priceFill)" dot={false} activeDot={{ r: 3, fill: SERIES.close, stroke: "hsl(var(--card))", strokeWidth: 2 }} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="sma50" name="SMA 50" stroke={SERIES.sma50} strokeWidth={1.4} dot={false} connectNulls isAnimationActive={false} />
+                        <Line type="monotone" dataKey="sma200" name="SMA 200" stroke={SERIES.sma200} strokeWidth={1.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} />
+                      </AreaChart>
+                    </ResponsiveContainer>}
             </div>
-            <p className="mt-3 border-t border-border pt-3 text-[10px] leading-5 text-muted-foreground">Moving averages are calculated from daily closing prices. Gaps indicate sessions where the selected average is unavailable.</p>
+            <p className="mt-3 border-t border-border pt-3 text-[10px] leading-5 text-muted-foreground">
+              Moving averages use daily closing prices.{" "}
+              {chartHasPartialHistory && chartRows[0] && `Only provider history since ${shortDate(chartRows[0].date, "long")} is available for this range. `}
+              MAX is limited to 7 years by the current API; provider gaps are preserved.
+            </p>
           </article>
 
           <article className="panel min-w-0 p-4 sm:p-5">
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div><div className="flex items-center gap-2"><Activity size={16} className="text-[#8f6caa]" /><h3 className="text-sm font-semibold tracking-tight">Relative strength</h3></div>
-                <p className="mt-1.5 text-xs text-muted-foreground">RSI · 14 sessions · scale 0–100</p></div>
+                <p className="mt-1.5 text-xs text-muted-foreground">RSI · 14 sessions · {chartRange} · scale 0–100</p></div>
               <ExportButton
                 label="Export RSI chart data"
-                filename={`${symbol.toLowerCase()}-rsi-14-${period}.csv`}
-                data={chronologicalRows.map(row => ({
+                filename={`${symbol.toLowerCase()}-rsi-14-${chartRange.toLowerCase()}.csv`}
+                data={chartRows.map(row => ({
                   date: row.date, rsi14: row.rsi14,
                 }))}
               />
             </div>
             <div className="mb-3 flex items-center gap-2 text-[11px] text-muted-foreground"><i className="h-[2px] w-4 rounded" style={{ backgroundColor: SERIES.rsi }} />RSI 14</div>
             <div className="h-[280px] w-full sm:h-[330px]">
-              <ResponsiveContainer width="100%" height="100%" debounce={0}>
-                <LineChart data={chronologicalRows} margin={{ top: 8, right: 7, bottom: 0, left: 0 }}>
-                  <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="2 5" />
-                  <XAxis dataKey="date" tickFormatter={value => shortDate(value)} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} minTickGap={38} />
-                  <YAxis domain={[0, 100]} ticks={[0, 30, 50, 70, 100]} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} width={28} />
-                  <ReferenceArea y1={70} y2={100} fill={SERIES.rsi} fillOpacity=".07" />
-                  <ReferenceArea y1={0} y2={30} fill={SERIES.close} fillOpacity=".06" />
-                  <ReferenceLine y={70} stroke={SERIES.rsi} strokeDasharray="4 4" strokeOpacity=".65" />
-                  <ReferenceLine y={30} stroke={SERIES.close} strokeDasharray="4 4" strokeOpacity=".65" />
-                  <Tooltip content={<ChartTooltip currency={currency} />} cursor={{ stroke: gridColor, strokeDasharray: "3 3" }} />
-                  <Line type="monotone" dataKey="rsi14" name="RSI 14" stroke={SERIES.rsi} strokeWidth={1.8} dot={false} activeDot={{ r: 3, fill: SERIES.rsi, stroke: "hsl(var(--card))", strokeWidth: 2 }} connectNulls isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              {chartLoading
+                ? <div role="status" aria-label="Loading selected RSI range" className="flex h-full items-center justify-center rounded-lg bg-muted/30 text-sm text-muted-foreground">Loading {chartRange} history…</div>
+                : needsLongerChartHistory && chartQuery.isError
+                  ? <div role="alert" className="flex h-full items-center justify-center rounded-lg bg-muted/30 px-4 text-center text-sm text-muted-foreground">RSI history is unavailable for this range.</div>
+                  : chartRows.length === 0
+                    ? <div role="status" className="flex h-full items-center justify-center rounded-lg bg-muted/30 px-4 text-center text-sm text-muted-foreground">No RSI history is available for this range.</div>
+                    : <ResponsiveContainer width="100%" height="100%" debounce={0}>
+                      <LineChart data={chartRows} margin={{ top: 8, right: 7, bottom: 0, left: 0 }}>
+                        <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="2 5" />
+                        <XAxis dataKey="date" tickFormatter={value => shortDate(value)} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} minTickGap={38} />
+                        <YAxis domain={[0, 100]} ticks={[0, 30, 50, 70, 100]} tick={{ fill: chartAxisColor, fontSize: 10, fontFamily: "IBM Plex Mono" }} axisLine={false} tickLine={false} width={28} />
+                        <ReferenceArea y1={70} y2={100} fill={SERIES.rsi} fillOpacity=".07" />
+                        <ReferenceArea y1={0} y2={30} fill={SERIES.close} fillOpacity=".06" />
+                        <ReferenceLine y={70} stroke={SERIES.rsi} strokeDasharray="4 4" strokeOpacity=".65" />
+                        <ReferenceLine y={30} stroke={SERIES.close} strokeDasharray="4 4" strokeOpacity=".65" />
+                        <Tooltip content={<ChartTooltip currency={currency} />} cursor={{ stroke: gridColor, strokeDasharray: "3 3" }} />
+                        <Line type="monotone" dataKey="rsi14" name="RSI 14" stroke={SERIES.rsi} strokeWidth={1.8} dot={false} activeDot={{ r: 3, fill: SERIES.rsi, stroke: "hsl(var(--card))", strokeWidth: 2 }} connectNulls isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>}
             </div>
             <div className="mt-3 flex flex-wrap justify-between gap-2 border-t border-border pt-3 text-[10px] leading-5 text-muted-foreground"><span>Dashed guides at 30 and 70</span><span>Context only, not a signal</span></div>
           </article>
@@ -488,6 +630,7 @@ function StockDashboard() {
       {loading && <section className="mt-5 space-y-5" aria-label="Loading stock history" data-testid="status-loading">
         <div className="flex items-end justify-between border-y border-border py-5"><div className="space-y-2"><div className="h-5 w-28 animate-pulse rounded bg-muted" /><div className="h-3 w-40 animate-pulse rounded bg-muted" /></div><div className="h-9 w-36 animate-pulse rounded bg-muted" /></div>
         <div className="grid grid-cols-2 gap-0 rounded-xl border border-border bg-card px-5 sm:grid-cols-4">{[0, 1, 2, 3].map(item => <div key={item} className="border-b border-border px-4 py-6 sm:border-b-0"><div className="h-3 w-20 animate-pulse rounded bg-muted" /><div className="mt-4 h-7 w-28 animate-pulse rounded bg-muted" /><div className="mt-3 h-3 w-32 animate-pulse rounded bg-muted" /></div>)}</div>
+        <div className="grid grid-cols-2 gap-0 rounded-xl border border-border bg-card px-5 sm:grid-cols-3 lg:grid-cols-5">{[0, 1, 2, 3, 4].map(item => <div key={item} className="border-b border-border px-4 py-6 lg:border-b-0"><div className="h-3 w-20 animate-pulse rounded bg-muted" /><div className="mt-4 h-7 w-28 animate-pulse rounded bg-muted" /><div className="mt-3 h-3 w-32 animate-pulse rounded bg-muted" /></div>)}</div>
         <div className="grid gap-5 lg:grid-cols-2">{[0, 1].map(item => <div key={item} className="panel p-5"><div className="h-4 w-32 animate-pulse rounded bg-muted" /><div className="mt-7 h-[300px] animate-pulse rounded-lg bg-muted/70" /></div>)}</div>
       </section>}
 
