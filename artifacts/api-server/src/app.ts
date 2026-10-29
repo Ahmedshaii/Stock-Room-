@@ -32,7 +32,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
-app.use("/api", router);
+
 
 // World Solution AI Route
 app.post("/api/solve", (req: any, res: any) => {
