@@ -65,6 +65,12 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
+    },
     port,
     strictPort: true,
     host: '0.0.0.0',

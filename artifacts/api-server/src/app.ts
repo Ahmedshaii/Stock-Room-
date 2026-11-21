@@ -34,23 +34,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api", router);
 
 
-// World Solution AI Route
-app.post("/api/solve", (req: any, res: any) => {
-  const { problem } = req.body;
-
-  if (!problem) {
-    return res.status(400).json({
-      error: "Please describe your problem"
-    });
-  }
-
-  res.json({
-    success: true,
-    message: "World Solution AI received your problem!",
-    problem: problem
-  });
-});
-
 export default app;
 
 
