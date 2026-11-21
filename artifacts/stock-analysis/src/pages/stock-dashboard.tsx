@@ -126,6 +126,11 @@ function Metric({ label, value, detail, accent, testId, className = "" }: { labe
 
 function StockDashboard() {
   const [symbolInput, setSymbolInput] = useState("AAPL");
+  const [aiProblem, setAiProblem] = useState("");
+  const [aiAnswer, setAiAnswer] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+
   const [symbol, setSymbol] = useState("AAPL");
   const [period, setPeriod] = useState<GetStockHistoryPeriod>("5y");
   const [chartRange, setChartRange] = useState<ChartRange>("5Y");
@@ -248,7 +253,35 @@ function StockDashboard() {
         });
       }
     }, intervalMs);
-    return () => window.clearInterval(timer);
+    const handleAiSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!aiProblem.trim() || aiLoading) return;
+    setAiLoading(true);
+    setAiAnswer("");
+    setAiError("");
+    try {
+      const response = await fetch("/api/solve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ problem: aiProblem.trim() }),
+      });
+      const data = await response.json() as {
+        success?: boolean;
+        answer?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.success || !data.answer) {
+        throw new Error(data.error || "World Solution AI could not answer. Please try again.");
+      }
+      setAiAnswer(data.answer);
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI service is temporarily unavailable.");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  return () => window.clearInterval(timer);
   }, [autoRefresh, chartParams, intervalMs, needsLongerChartHistory, params, queryClient, symbol]);
 
   const rows = history?.rows || [];
@@ -473,6 +506,37 @@ function StockDashboard() {
             <span aria-hidden="true">/</span><span>Not investment advice</span>
           </div>
         </div>
+      </section>
+
+      <section className="enter mb-8 rounded-xl border border-primary/20 bg-card p-5 sm:p-7" aria-label="World Solution AI">
+        <div className="mb-4">
+          <div className="text-[10px] font-semibold uppercase tracking-[.18em] text-primary">Powered by Gemini</div>
+          <h2 className="mt-2 text-xl font-semibold tracking-tight text-foreground sm:text-2xl">World Solution AI</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Describe any problem. Get an AI-powered response.</p>
+        </div>
+        <form onSubmit={handleAiSubmit} className="space-y-3">
+          <textarea
+            value={aiProblem}
+            onChange={event => setAiProblem(event.target.value)}
+            placeholder="What problem would you like World Solution AI to solve?"
+            rows={4}
+            maxLength={10000}
+            required
+            className="w-full resize-y rounded-lg border border-border bg-background p-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/20"
+          />
+          <button
+            type="submit"
+            disabled={aiLoading || !aiProblem.trim()}
+            className="flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {aiLoading ? "Thinking..." : "Ask World Solution AI"}
+          </button>
+        </form>
+        {aiError && <p role="alert" className="mt-4 rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{aiError}</p>}
+        {aiAnswer && <div className="mt-5 rounded-lg border border-border bg-background p-4">
+          <h3 className="mb-2 text-sm font-semibold text-primary">World Solution AI Answer</h3>
+          <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">{aiAnswer}</p>
+        </div>}
       </section>
 
       {history && !loading && !query.error && rows.length > 0 && <>
