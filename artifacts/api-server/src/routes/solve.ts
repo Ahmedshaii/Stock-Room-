@@ -30,9 +30,9 @@ router.post("/solve", async (req, res) => {
       },
     );
 
-    const data = await response.json() as any;
+    const data = await (response as any).json() as any;
 
-    if (!response.ok) {
+    if (!(response as any).ok) {
       console.error("Gemini API error:", response.status, data.error?.message);
       return res.status(502).json({ error: "AI provider request failed." });
     }
