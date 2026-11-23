@@ -34,7 +34,7 @@ router.get("/stocks/search", async (req, res): Promise<void> => {
           "Stock search is temporarily unavailable. Try again shortly.",
           502,
         );
-    req.log.warn(
+    console.warn(
       { err: error, statusCode: failure.statusCode },
       "Stock symbol search failed",
     );
@@ -80,7 +80,7 @@ router.get("/stocks", async (req, res): Promise<void> => {
       },
       forceRefresh: parsed.data.refresh,
       onCacheFailure: (operation, error) => {
-        req.log.warn(
+        console.warn(
           { err: error, operation },
           "Stock history cache operation failed",
         );
@@ -94,7 +94,7 @@ router.get("/stocks", async (req, res): Promise<void> => {
           "Market data is temporarily unavailable. Try again shortly.",
           502,
         );
-    req.log.warn(
+    console.warn(
       { err: error, symbol, statusCode: failure.statusCode },
       "Market data request failed",
     );
