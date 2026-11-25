@@ -95,13 +95,13 @@ export async function searchStockSymbols(
     throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
   }
 
-  if (!response.ok) {
+  if (!(response as any).ok) {
     throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
   }
 
   let payload: unknown;
   try {
-    payload = await response.json();
+    payload = await (response as any).json();
   } catch {
     throw new StockDataError(
       "The stock search provider returned an unreadable response.",
@@ -523,7 +523,7 @@ async function fetchYahooResult(
         );
       }
 
-      if (!response.ok) {
+      if (!(response as any).ok) {
         if (response.status === 400 || response.status === 404) {
           throw new StockDataError(
             "No history was found for this ticker.",
@@ -538,7 +538,7 @@ async function fetchYahooResult(
 
       let payload: unknown;
       try {
-        payload = await response.json();
+        payload = await (response as any).json();
       } catch {
         throw new StockDataError(
           "Yahoo Finance returned an unreadable response.",
