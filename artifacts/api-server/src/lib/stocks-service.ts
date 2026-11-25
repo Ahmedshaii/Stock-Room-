@@ -5,6 +5,13 @@ import {
 
 export type StockPeriod = "1y" | "3y" | "5y" | "7y";
 
+type FetchResponse = {
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  json: () => Promise<unknown>;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 type YahooChartResult = JsonRecord & {
@@ -27,7 +34,7 @@ type HistoryCache = {
 };
 
 type StockHistoryDependencies = {
-  fetcher?: (input: URL, init: RequestInit) => Promise<Response>;
+  fetcher?: (input: URL, init: RequestInit) => Promise<FetchResponse>;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
   cache?: HistoryCache;
@@ -49,7 +56,7 @@ const TEMPORARY_SEARCH_ERROR =
 const STOCK_SYMBOL_PATTERN = /^[A-Za-z0-9.^=_-]{1,20}$/;
 
 type StockSearchDependencies = {
-  fetcher?: (input: URL, init: RequestInit) => Promise<Response>;
+  fetcher?: (input: URL, init: RequestInit) => Promise<FetchResponse>;
 };
 
 export class StockDataError extends Error {
@@ -82,7 +89,7 @@ export async function searchStockSymbols(
   url.searchParams.set("newsCount", "0");
   url.searchParams.set("enableFuzzyQuery", "true");
 
-  let response: Response;
+  let response: FetchResponse;
   try {
     response = await (dependencies.fetcher ?? fetch)(url, {
       headers: {
@@ -95,13 +102,13 @@ export async function searchStockSymbols(
     throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
   }
 
-  if (!(response as any).ok) {
+  if (!response.ok) {
     throw new StockDataError(TEMPORARY_SEARCH_ERROR, 502);
   }
 
   let payload: unknown;
   try {
-    payload = await (response as any).json();
+    payload = await response.json();
   } catch {
     throw new StockDataError(
       "The stock search provider returned an unreadable response.",
@@ -476,7 +483,7 @@ function parseYahooPayload(payload: unknown): {
   return { result: chart.result[0], error: providerError };
 }
 
-function getRetryAfterMs(response: Response): number | undefined {
+function getRetryAfterMs(response: FetchResponse): number | undefined {
   const retryAfter = response.headers.get("retry-after");
   if (!retryAfter) return undefined;
   const seconds = Number(retryAfter);
@@ -500,11 +507,11 @@ function defaultSleep(milliseconds: number): Promise<void> {
 
 async function fetchYahooResult(
   url: URL,
-  fetcher: (input: URL, init: RequestInit) => Promise<Response>,
+  fetcher: (input: URL, init: RequestInit) => Promise<FetchResponse>,
   sleep: (milliseconds: number) => Promise<void>,
 ): Promise<YahooChartResult> {
   for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
-    let response: Response | undefined;
+    let response: FetchResponse | undefined;
     try {
       response = await fetcher(url, {
         headers: {
@@ -523,7 +530,7 @@ async function fetchYahooResult(
         );
       }
 
-      if (!(response as any).ok) {
+      if (!response.ok) {
         if (response.status === 400 || response.status === 404) {
           throw new StockDataError(
             "No history was found for this ticker.",
@@ -538,7 +545,7 @@ async function fetchYahooResult(
 
       let payload: unknown;
       try {
-        payload = await (response as any).json();
+        payload = await response.json();
       } catch {
         throw new StockDataError(
           "Yahoo Finance returned an unreadable response.",
