@@ -253,7 +253,12 @@ function StockDashboard() {
         });
       }
     }, intervalMs);
-    const handleAiSubmit = async (event: FormEvent<HTMLFormElement>) => {
+
+
+  return () => window.clearInterval(timer);
+  }, [autoRefresh, chartParams, intervalMs, needsLongerChartHistory, params, queryClient, symbol]);
+
+  const handleAiSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!aiProblem.trim() || aiLoading) return;
     setAiLoading(true);
@@ -263,7 +268,14 @@ function StockDashboard() {
       const response = await fetch("/api/solve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ problem: aiProblem.trim() }),
+        body: JSON.stringify({
+          problem: aiProblem.trim(),
+          marketContext: {
+            symbol,
+            latest: history?.latest ?? null,
+            recentRows: (history?.rows ?? []).slice(-10),
+          },
+        }),
       });
       const data = await response.json() as {
         success?: boolean;
@@ -280,9 +292,6 @@ function StockDashboard() {
       setAiLoading(false);
     }
   };
-
-  return () => window.clearInterval(timer);
-  }, [autoRefresh, chartParams, intervalMs, needsLongerChartHistory, params, queryClient, symbol]);
 
   const rows = history?.rows || [];
   const tableRows = useMemo(() => rows.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12), [rows]);
